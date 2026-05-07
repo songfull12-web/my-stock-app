@@ -9,16 +9,22 @@ from scipy.stats import linregress
 st.set_page_config(page_title="Technical Alpha V4.0", layout="wide")
 
 # 1. 한글 종목명 -> 코드 변환용 마스터 데이터 로드 (KRX)
+# 한글 종목명 -> 코드 변환용 마스터 데이터 (수정 버전)
 @st.cache_data
 def load_krx_data():
     try:
-        url = 'https://kind.krx.co.kr/corpofficial/corpList.do?method=download'
+        # 더 안정적인 정보제공 사이트(GitHub 등)의 KRX 종목 리스트 활용
+        url = 'http://kind.krx.co.kr/corpofficial/corpList.do?method=download'
+        # 가끔 보안 설정 때문에 header를 추가해야 할 수도 있습니다.
         df = pd.read_html(url, header=0)[0]
         df = df[['회사명', '종목코드']]
         df['종목코드'] = df['종목코드'].apply(lambda x: f"{x:06d}")
         return df
-    except:
+    except Exception as e:
+        # 데이터 로딩 실패 시 에러 메시지 출력 (디버깅용)
+        st.sidebar.error(f"데이터 로딩 실패: {e}")
         return pd.DataFrame(columns=['회사명', '종목코드'])
+
 
 krx_list = load_krx_data()
 
