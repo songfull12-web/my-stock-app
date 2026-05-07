@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
-from scipy.stats import linregress
 
 # 1. 페이지 설정
 st.set_page_config(page_title="Professional Stock Terminal", layout="wide")
@@ -75,42 +74,71 @@ if final_ticker:
             curr_p = float(data['Close'].iloc[-1])
             high_v, low_v = float(data['High'].max()), float(data['Low'].min())
             
-            # 레이아웃 설정 (RSI와 거래량에 따라 행 분할)
+            # 레이아웃 설정
             rows = 2 if show_rsi or show_vol else 1
             specs = [[{"secondary_y": True}], [{"secondary_y": False}]] if rows == 2 else [[{"secondary_y": True}]]
-            fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.08, 
+            fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, 
                                row_heights=[0.7, 0.3] if rows == 2 else [1.0], specs=specs)
 
             # [메인] 캔들차트
             fig.add_trace(go.Candlestick(x=data.iloc[:,0], open=data['Open'], high=data['High'], 
-                                         low=data['Low'], close=data['Close'], name="주가"), row=1, col=1)
+                                       low=data['Low'], close=data['Close'], name="주가"), row=1, col=1)
 
             # [메인] 이평선
             if show_ma:
-                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA20'], name="20일", line=dict(color='cyan', width=1)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA60'], name="60일", line=dict(color='magenta', width=1)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA20'], name="20일", line=dict(color='cyan', width=1.5)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA60'], name="60일", line=dict(color='magenta', width=1.5)), row=1, col=1)
 
-            # [메인] 피보나치 가격 라벨링
+            # [메인] 피보나치 개선 (가시성 강화)
             if show_fib:
                 diff = high_v - low_v
-                for r in [0, 0.382, 0.5, 0.618, 1.0]:
-                    val = high_v - (r * diff)
-                    fig.add_hline(y=val, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=1, col=1)
-                    fig.add_annotation(x=data.iloc[:,0].iloc[-1], y=val, text=f"{r*100}% ({val:,.0f})", 
-                                     showarrow=False, xanchor="left", font=dict(size=10, color="gray"), row=1, col=1)
+                levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+                # 구간별 소프트한 색상 정의
+                colors = ["rgba(255, 99, 132, 0.1)", "rgba(255, 159, 64, 0.1)", "rgba(255, 205, 86, 0.1)", 
+                          "rgba(75, 192, 192, 0.1)", "rgba(54, 162, 235, 0.1)", "rgba(153, 102, 255, 0.1)"]
+                
+                for i in range(len(levels)):
+                    val = high_v - (levels[i] * diff)
+                    # 수평선 추가
+                    fig.add_hline(y=val, line_dash="dash", line_color="rgba(255, 255, 255, 0.4)", 
+                                  line_width=1, row=1, col=1)
+                    
+                    # 가격 라벨 추가 (배경색 추가로 가독성 확보)
+                    fig.add_annotation(
+                        x=data.iloc[:,0].iloc[0],
+                        y=val,
+                        text=f" {levels[i]*100}% ({val:,.0f})",
+                        showarrow=False,
+                        xanchor="left",
+                        bgcolor="rgba(30, 30, 30, 0.8)",
+                        font=dict(size=10, color="white"),
+                        row=1, col=1
+                    )
+                    
+                    # 구간 색상 채우기
+                    if i < len(levels) - 1:
+                        upper_val = high_v - (levels[i] * diff)
+                        lower_val = high_v - (levels[i+1] * diff)
+                        fig.add_hrect(y0=lower_val, y1=upper_val, fillcolor=colors[i % len(colors)], 
+                                      line_width=0, row=1, col=1)
 
             # [하단] 거래량 또는 RSI
             if show_vol:
-                colors = ['red' if row['Open'] < row['Close'] else 'blue' for _, row in data.iterrows()]
-                fig.add_trace(go.Bar(x=data.iloc[:,0], y=data['Volume'], name="거래량", marker_color=colors, opacity=0.5), row=rows, col=1)
+                vol_colors = ['red' if row['Open'] < row['Close'] else 'blue' for _, row in data.iterrows()]
+                fig.add_trace(go.Bar(x=data.iloc[:,0], y=data['Volume'], name="거래량", marker_color=vol_colors, opacity=0.4), row=rows, col=1)
             
             if show_rsi:
-                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['RSI'], name="RSI", line=dict(color='orange')), row=rows, col=1)
-                fig.add_hline(y=70, line_dash="dash", line_color="red", row=rows, col=1)
-                fig.add_hline(y=30, line_dash="dash", line_color="green", row=rows, col=1)
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['RSI'], name="RSI", line=dict(color='#FFD700', width=1.5)), row=rows, col=1)
+                fig.add_hline(y=70, line_dash="dash", line_color="#FF6347", row=rows, col=1)
+                fig.add_hline(y=30, line_dash="dash", line_color="#32CD32", row=rows, col=1)
 
-            fig.update_layout(template="plotly_dark", height=800, xaxis_rangeslider_visible=False,
-                              margin=dict(l=10, r=10, t=50, b=10))
+            fig.update_layout(
+                template="plotly_dark", 
+                height=850, 
+                xaxis_rangeslider_visible=False,
+                margin=dict(l=10, r=10, t=50, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
             st.plotly_chart(fig, use_container_width=True)
 
             # 📋 투자 전략 대시보드
@@ -120,15 +148,18 @@ if final_ticker:
                 st.metric("현재가", f"{curr_p:,.0f}")
             with cols[1]:
                 target = high_v
-                st.metric("전고점(목표)", f"{target:,.0f}", f"{((target/curr_p)-1)*100:.1f}%")
+                st.metric("기간 고점", f"{target:,.0f}", f"{((target/curr_p)-1)*100:.1f}%")
             with cols[2]:
                 support = low_v
-                st.metric("전저점(지지)", f"{support:,.0f}", f"{((support/curr_p)-1)*100:.1f}%", delta_color="normal")
+                st.metric("기간 저점", f"{support:,.0f}", f"{((support/curr_p)-1)*100:.1f}%", delta_color="normal")
             with cols[3]:
                 if show_rsi:
                     rsi_val = data['RSI'].iloc[-1]
                     status = "과매수(주의)" if rsi_val > 70 else "과매도(관심)" if rsi_val < 30 else "보통"
                     st.metric("심리 지수(RSI)", f"{rsi_val:.1f}", status)
 
-        else: st.error("데이터 로드 실패")
-    except Exception as e: st.error(f"오류: {e}")
+        else: st.error("데이터를 불러올 수 없습니다. 티커를 확인해 주세요.")
+    except Exception as e: st.error(f"오류 발생: {e}")
+
+# 정보 출처 표시
+st.caption("Data Source: Yahoo Finance via yfinance, FinanceDataReader")
