@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+from scipy.stats import linregress
 
 # 1. 페이지 설정
 st.set_page_config(page_title="Professional Stock Terminal", layout="wide")
@@ -44,6 +45,7 @@ with st.sidebar:
     
     st.subheader("🛠️ 지표 커스텀")
     show_ma = st.checkbox("이동평균선(MA)", value=True)
+    show_trend = st.checkbox("자동 추세선(Trend)", value=True) # 추세선 옵션 추가
     show_vol = st.checkbox("거래량 차트", value=True)
     show_rsi = st.checkbox("RSI 지표", value=True)
     show_fib = st.checkbox("피보나치 구역", value=True)
@@ -86,41 +88,34 @@ if final_ticker:
 
             # [메인] 이평선
             if show_ma:
-                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA20'], name="20일", line=dict(color='cyan', width=1.5)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA60'], name="60일", line=dict(color='magenta', width=1.5)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA20'], name="20일", line=dict(color='cyan', width=1.2)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA60'], name="60일", line=dict(color='magenta', width=1.2)), row=1, col=1)
 
-            # [메인] 피보나치 개선 (가시성 강화)
+            # [메인] 자동 추세선 (선형 회귀)
+            if show_trend:
+                y = data['Close'].values
+                x = np.arange(len(y))
+                slope, intercept, r_value, p_value, std_err = linregress(x, y)
+                trendline = intercept + slope * x
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=trendline, name="추세선", 
+                                         line=dict(color='yellow', width=2, dash='dot')), row=1, col=1)
+
+            # [메인] 피보나치 개선
             if show_fib:
                 diff = high_v - low_v
                 levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-                # 구간별 소프트한 색상 정의
                 colors = ["rgba(255, 99, 132, 0.1)", "rgba(255, 159, 64, 0.1)", "rgba(255, 205, 86, 0.1)", 
                           "rgba(75, 192, 192, 0.1)", "rgba(54, 162, 235, 0.1)", "rgba(153, 102, 255, 0.1)"]
                 
                 for i in range(len(levels)):
                     val = high_v - (levels[i] * diff)
-                    # 수평선 추가
-                    fig.add_hline(y=val, line_dash="dash", line_color="rgba(255, 255, 255, 0.4)", 
-                                  line_width=1, row=1, col=1)
-                    
-                    # 가격 라벨 추가 (배경색 추가로 가독성 확보)
-                    fig.add_annotation(
-                        x=data.iloc[:,0].iloc[0],
-                        y=val,
-                        text=f" {levels[i]*100}% ({val:,.0f})",
-                        showarrow=False,
-                        xanchor="left",
-                        bgcolor="rgba(30, 30, 30, 0.8)",
-                        font=dict(size=10, color="white"),
-                        row=1, col=1
-                    )
-                    
-                    # 구간 색상 채우기
+                    fig.add_hline(y=val, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)", line_width=1, row=1, col=1)
+                    fig.add_annotation(x=data.iloc[:,0].iloc[0], y=val, text=f" {levels[i]*100}% ({val:,.0f})",
+                                       showarrow=False, xanchor="left", bgcolor="rgba(30, 30, 30, 0.8)",
+                                       font=dict(size=10, color="white"), row=1, col=1)
                     if i < len(levels) - 1:
-                        upper_val = high_v - (levels[i] * diff)
-                        lower_val = high_v - (levels[i+1] * diff)
-                        fig.add_hrect(y0=lower_val, y1=upper_val, fillcolor=colors[i % len(colors)], 
-                                      line_width=0, row=1, col=1)
+                        fig.add_hrect(y0=high_v-(levels[i+1]*diff), y1=high_v-(levels[i]*diff), 
+                                      fillcolor=colors[i % len(colors)], line_width=0, row=1, col=1)
 
             # [하단] 거래량 또는 RSI
             if show_vol:
@@ -132,34 +127,25 @@ if final_ticker:
                 fig.add_hline(y=70, line_dash="dash", line_color="#FF6347", row=rows, col=1)
                 fig.add_hline(y=30, line_dash="dash", line_color="#32CD32", row=rows, col=1)
 
-            fig.update_layout(
-                template="plotly_dark", 
-                height=850, 
-                xaxis_rangeslider_visible=False,
-                margin=dict(l=10, r=10, t=50, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
+            fig.update_layout(template="plotly_dark", height=850, xaxis_rangeslider_visible=False,
+                              margin=dict(l=10, r=10, t=50, b=10),
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True)
 
             # 📋 투자 전략 대시보드
             st.divider()
             cols = st.columns(4)
-            with cols[0]:
-                st.metric("현재가", f"{curr_p:,.0f}")
-            with cols[1]:
-                target = high_v
-                st.metric("기간 고점", f"{target:,.0f}", f"{((target/curr_p)-1)*100:.1f}%")
-            with cols[2]:
-                support = low_v
-                st.metric("기간 저점", f"{support:,.0f}", f"{((support/curr_p)-1)*100:.1f}%", delta_color="normal")
+            with cols[0]: st.metric("현재가", f"{curr_p:,.0f}")
+            with cols[1]: st.metric("기간 고점", f"{high_v:,.0f}", f"{((high_v/curr_p)-1)*100:.1f}%")
+            with cols[2]: st.metric("기간 저점", f"{low_v:,.0f}", f"{((low_v/curr_p)-1)*100:.1f}%", delta_color="normal")
             with cols[3]:
                 if show_rsi:
                     rsi_val = data['RSI'].iloc[-1]
                     status = "과매수(주의)" if rsi_val > 70 else "과매도(관심)" if rsi_val < 30 else "보통"
                     st.metric("심리 지수(RSI)", f"{rsi_val:.1f}", status)
 
-        else: st.error("데이터를 불러올 수 없습니다. 티커를 확인해 주세요.")
+        else: st.error("데이터 로드 실패")
     except Exception as e: st.error(f"오류 발생: {e}")
 
 # 정보 출처 표시
-st.caption("Data Source: Yahoo Finance via yfinance, FinanceDataReader")
+st.caption("Data Source: Yahoo Finance (yfinance), FinanceDataReader | Trendline: Linear Regression Analysis")
