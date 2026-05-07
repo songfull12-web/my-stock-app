@@ -45,7 +45,7 @@ with st.sidebar:
     
     st.subheader("🛠️ 지표 커스텀")
     show_ma = st.checkbox("이동평균선(MA)", value=True)
-    show_trend = st.checkbox("자동 추세선(Trend)", value=True) # 추세선 옵션 추가
+    show_trend = st.checkbox("추세 지지/저항선", value=True) # 기능 업데이트
     show_vol = st.checkbox("거래량 차트", value=True)
     show_rsi = st.checkbox("RSI 지표", value=True)
     show_fib = st.checkbox("피보나치 구역", value=True)
@@ -76,7 +76,6 @@ if final_ticker:
             curr_p = float(data['Close'].iloc[-1])
             high_v, low_v = float(data['High'].max()), float(data['Low'].min())
             
-            # 레이아웃 설정
             rows = 2 if show_rsi or show_vol else 1
             specs = [[{"secondary_y": True}], [{"secondary_y": False}]] if rows == 2 else [[{"secondary_y": True}]]
             fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, 
@@ -91,28 +90,36 @@ if final_ticker:
                 fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA20'], name="20일", line=dict(color='cyan', width=1.2)), row=1, col=1)
                 fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data['MA60'], name="60일", line=dict(color='magenta', width=1.2)), row=1, col=1)
 
-            # [메인] 자동 추세선 (선형 회귀)
+            # [메인] 추세 지지/저항선 로직
             if show_trend:
                 y = data['Close'].values
                 x = np.arange(len(y))
                 slope, intercept, r_value, p_value, std_err = linregress(x, y)
-                trendline = intercept + slope * x
-                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=trendline, name="추세선", 
-                                         line=dict(color='yellow', width=2, dash='dot')), row=1, col=1)
+                
+                # 상승 추세 (기울기 > 0): 저점을 연결하는 지지선 역할
+                if slope > 0:
+                    support_line = (intercept + slope * x) - (std_err * 15) # 통계적 하단 편차 적용
+                    fig.add_trace(go.Scatter(x=data.iloc[:,0], y=support_line, name="상승 지지선", 
+                                             line=dict(color='#00FF00', width=2, dash='solid')), row=1, col=1)
+                # 하락 추세 (기울기 < 0): 고점을 연결하는 저항선 역할
+                else:
+                    resistance_line = (intercept + slope * x) + (std_err * 15) # 통계적 상단 편차 적용
+                    fig.add_trace(go.Scatter(x=data.iloc[:,0], y=resistance_line, name="하락 저항선", 
+                                             line=dict(color='#FF0000', width=2, dash='solid')), row=1, col=1)
 
             # [메인] 피보나치 개선
             if show_fib:
                 diff = high_v - low_v
                 levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-                colors = ["rgba(255, 99, 132, 0.1)", "rgba(255, 159, 64, 0.1)", "rgba(255, 205, 86, 0.1)", 
-                          "rgba(75, 192, 192, 0.1)", "rgba(54, 162, 235, 0.1)", "rgba(153, 102, 255, 0.1)"]
+                colors = ["rgba(255, 99, 132, 0.07)", "rgba(255, 159, 64, 0.07)", "rgba(255, 205, 86, 0.07)", 
+                          "rgba(75, 192, 192, 0.07)", "rgba(54, 162, 235, 0.07)", "rgba(153, 102, 255, 0.07)"]
                 
                 for i in range(len(levels)):
                     val = high_v - (levels[i] * diff)
-                    fig.add_hline(y=val, line_dash="dash", line_color="rgba(255, 255, 255, 0.3)", line_width=1, row=1, col=1)
-                    fig.add_annotation(x=data.iloc[:,0].iloc[0], y=val, text=f" {levels[i]*100}% ({val:,.0f})",
+                    fig.add_hline(y=val, line_dash="dash", line_color="rgba(255, 255, 255, 0.2)", line_width=1, row=1, col=1)
+                    fig.add_annotation(x=data.iloc[:,0].iloc[0], y=val, text=f" {levels[i]*100}%",
                                        showarrow=False, xanchor="left", bgcolor="rgba(30, 30, 30, 0.8)",
-                                       font=dict(size=10, color="white"), row=1, col=1)
+                                       font=dict(size=9, color="gray"), row=1, col=1)
                     if i < len(levels) - 1:
                         fig.add_hrect(y0=high_v-(levels[i+1]*diff), y1=high_v-(levels[i]*diff), 
                                       fillcolor=colors[i % len(colors)], line_width=0, row=1, col=1)
@@ -148,4 +155,4 @@ if final_ticker:
     except Exception as e: st.error(f"오류 발생: {e}")
 
 # 정보 출처 표시
-st.caption("Data Source: Yahoo Finance (yfinance), FinanceDataReader | Trendline: Linear Regression Analysis")
+st.caption("Data Source: Yahoo Finance | 분석 엔진: Linear Regression & Fibonacci Retracement")
