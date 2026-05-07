@@ -20,15 +20,17 @@ start_date = end_date - timedelta(days=days)
 
 if ticker:
     try:
+        # 데이터 호출
         df = yf.download(ticker, start=start_date, end=end_date)
         
         if df.empty:
             st.error("데이터를 불러올 수 없습니다. 티커명을 확인하세요.")
         else:
-            # 피보나치 계산
-            high_price = df['High'].max()
-            low_price = df['Low'].min()
+            # 에러 방지를 위해 고점/저점 값을 숫자로 확실히 추출
+            high_price = float(df['High'].max().item())
+            low_price = float(df['Low'].min().item())
             diff = high_price - low_price
+            current_price = float(df['Close'].iloc[-1].item())
             
             # 차트 생성
             fig = go.Figure()
@@ -39,22 +41,23 @@ if ticker:
                 low=df['Low'], close=df['Close'], name="Price"
             ))
 
-            # 피보나치 라인
+            # 피보나치 라인 계산 및 추가
             levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
             colors = ["gray", "red", "orange", "green", "blue", "purple", "gray"]
             
             for level, color in zip(levels, colors):
                 price = high_price - (level * diff)
-                fig.add_hline(y=float(price), line_dash="dot", line_color=color,
+                fig.add_hline(y=price, line_dash="dot", line_color=color,
                              annotation_text=f"{level*100}% ({price:.2f})", 
                              annotation_position="bottom right")
 
             fig.update_layout(title=f"{ticker} 기술적 분석 (피보나치)", yaxis_title="Price (USD)", height=800)
             st.plotly_chart(fig, use_container_width=True)
 
+            # 데이터 요약 정보
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("현재가", f"${df['Close'].iloc[-1]:.2f}")
+                st.metric("현재가", f"${current_price:.2f}")
             with col2:
                 st.metric("기간 고점", f"${high_price:.2f}")
             with col3:
