@@ -8,31 +8,27 @@ import numpy as np
 # 1. 페이지 설정
 st.set_page_config(page_title="High-Visibility Strategy Terminal", layout="wide")
 
-# 2. 한국 주식 전종목 리스트 로드 (더 안정적인 소스로 교체)
-@st.cache_data
+# 2. 한국 주식 전종목 리스트 로드 (안정성 강화)
+@st.cache_data(show_spinner="종목 리스트 업데이트 중...")
 def get_all_korean_stocks():
     try:
-        # 한국거래소 종목 리스트 (GitHub 최신 백업본 활용)
+        # 실시간 KRX 종목 리스트 소스
         url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
         df = pd.read_csv(url)
         
-        # 종목명과 티커 매핑
-        stock_map = {}
-        for _, row in df.iterrows():
-            name = str(row['Name'])
-            code = str(row['Symbol']).zfill(6)
-            market = str(row['Market'])
-            # KOSPI는 .KS, 그 외(KOSDAQ/KONEX)는 .KQ
-            suffix = ".KS" if market == 'KOSPI' else ".KQ"
-            stock_map[name] = f"{code}{suffix}"
+        # 이름: 티커(.KS/.KQ) 맵핑
+        stock_map = {
+            str(row['Name']): f"{str(row['Symbol']).zfill(6)}{'.KS' if row['Market'] == 'KOSPI' else '.KQ'}"
+            for _, row in df.iterrows()
+        }
         return stock_map
-    except Exception as e:
-        # 데이터 로드 실패 시 최소한의 우량주라도 나오도록 조치
-        return {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "셀트리온": "068270.KS", "카카오": "035720.KS"}
+    except:
+        # 로드 실패 시 비상용 리스트
+        return {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "셀트리온": "068270.KS", "에코프로": "086520.KQ"}
 
 stock_dict = get_all_korean_stocks()
 
-# [기존 추천 엔진 로직 유지]
+# [기존 추천 엔진 유지]
 def get_recommendations():
     target_pool = {
         "국내": {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "현대차": "005380.KS", "셀트리온": "068270.KS"},
@@ -55,9 +51,9 @@ def get_recommendations():
             except: continue
     return pd.DataFrame(recom_list)
 
-# 3. 보조지표 계산 (피보나치 포함 기존 로직)
+# 3. 보조지표 계산 (기존 피보나치/매수신호 로직)
 def add_indicators(df):
-    if len(df) < 20: return df 
+    if len(df) < 20: return df
     df['MA5'] = df['Close'].rolling(5).mean()
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA60'] = df['Close'].rolling(60).mean()
@@ -76,7 +72,7 @@ def add_indicators(df):
     df['Buy_Signal'] = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1)) | (df['RSI'] < 30)
     return df
 
-# 4. 사이드바 - 검색 강화 (요청하신 부분)
+# 4. 사이드바 - 검색 및 추천 (개선)
 with st.sidebar:
     st.header("🎯 실시간 스캐너")
     if st.button("시장 스캔 시작"):
@@ -85,21 +81,21 @@ with st.sidebar:
         st.dataframe(st.session_state['recom_df'], hide_index=True)
 
     st.divider()
-    st.header("🔍 종목 검색")
-    # "삼성" 입력 시 "삼성전자", "삼성SDI" 등이 모두 검색되도록 로직 수정
-    search_input = st.text_input("종목명 입력 (예: 삼성, 에코, 셀트)", value="삼성전자")
+    st.header("🔍 전종목 검색")
+    search_term = st.text_input("종목명 입력 (예: 삼성, 에코, 현대)", value="삼성전자")
     
-    # [검색 필터링 기능 강화]
-    matches = [name for name in stock_dict.keys() if search_input.upper() in name.upper()]
+    # [부분 일치 검색 강화]
+    search_results = [n for n in stock_dict.keys() if search_term.upper() in n.upper()]
     
-    if matches:
-        # 검색된 결과가 있을 때만 선택 박스 노출
-        selected_name = st.selectbox(f"검색 결과 ({len(matches)}건)", sorted(matches))
+    if search_results:
+        # 검색된 리스트 중 실제 분석할 종목 선택
+        selected_name = st.selectbox(f"검색 결과 ({len(search_results)}건)", sorted(search_results))
         final_ticker = stock_dict[selected_name]
+        st.success(f"선택됨: {selected_name} ({final_ticker})")
     else:
-        # 한국 주식 리스트에 없으면 미국 주식 티커로 인식
-        final_ticker = search_input.upper()
-        selected_name = search_input
+        st.warning("한국 주식 리스트에 없습니다. 직접 티커를 입력하세요.")
+        final_ticker = search_term.upper()
+        selected_name = search_term
 
     period = st.selectbox("조회 기간", ["6mo", "1y", "2y"], index=0)
     
@@ -108,7 +104,7 @@ with st.sidebar:
     show_fib = st.checkbox("피보나치(강력강조)", value=True)
     show_vol = st.checkbox("거래량 표시", value=True)
 
-# 5. 메인 차트 영역 (기존 시각화 완벽 유지)
+# 5. 메인 영역 (기존 시각화 로직 100% 유지)
 if final_ticker:
     data = yf.download(final_ticker, period=period, interval="1d", auto_adjust=True)
     if not data.empty:
@@ -130,7 +126,7 @@ if final_ticker:
             rows = 2 if show_vol else 1
             fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.75, 0.25] if rows==2 else [1])
 
-            # 피보나치 채널 시각화
+            # 피보나치 채널
             if show_fib:
                 levels = [(f0, f236, 'rgba(255, 0, 0, 0.15)'), (f236, f382, 'rgba(255, 165, 0, 0.1)'), (f382, f500, 'rgba(255, 255, 0, 0.08)'), (f500, f618, 'rgba(0, 255, 0, 0.1)'), (f618, f100, 'rgba(0, 0, 255, 0.15)')]
                 for top, bottom, color in levels:
@@ -144,7 +140,7 @@ if final_ticker:
                 for col, color in [('MA5', 'orange'), ('MA20', 'cyan'), ('MA60', 'magenta'), ('MA120', 'white')]:
                     if col in data.columns: fig.add_trace(go.Scatter(x=data['Date'], y=data[col], name=col, line=dict(color=color, width=1.5)), row=1, col=1)
 
-            # 매수 타점 (★BUY)
+            # 매수 타점
             if 'Buy_Signal' in data.columns:
                 buy_pts = data[data['Buy_Signal']]
                 fig.add_trace(go.Scatter(x=buy_pts['Date'], y=buy_pts['Low']*0.98, mode='markers+text', text=["★BUY"]*len(buy_pts), textposition="bottom center", marker=dict(symbol='star', size=12, color='yellow'), name='타점'), row=1, col=1)
