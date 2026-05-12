@@ -7,8 +7,11 @@ import plotly.graph_objects as go
 
 from plotly.subplots import make_subplots
 
+from scipy.signal import argrelextrema
+from sklearn.linear_model import LinearRegression
+
 # =========================================================
-# PAGE CONFIG
+# PAGE
 # =========================================================
 
 st.set_page_config(
@@ -23,45 +26,31 @@ st.set_page_config(
 st.markdown("""
 <style>
 
-.metric-card {
-    background-color: #111;
-    padding: 15px;
-    border-radius: 12px;
-    border: 1px solid #333;
+html, body, [class*="css"] {
+    background-color: #0e1117;
+    color: white;
 }
 
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# KRX MASTER
+# KRX DB
 # =========================================================
 
-@st.cache_data(show_spinner="KRX 종목 불러오는 중...")
+@st.cache_data
 def load_krx():
 
-    try:
+    url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
 
-        url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
+    df = pd.read_csv(url)
 
-        df = pd.read_csv(url)
-
-        return df[['Symbol', 'Name', 'Market']]
-
-    except:
-
-        return pd.DataFrame([
-            {
-                "Symbol": "005930",
-                "Name": "삼성전자",
-                "Market": "KOSPI"
-            }
-        ])
+    return df[['Symbol', 'Name', 'Market']]
 
 master = load_krx()
 
 # =========================================================
-# DATA LOAD
+# LOAD DATA
 # =========================================================
 
 @st.cache_data(ttl=300)
@@ -92,7 +81,6 @@ def indicators(df):
     df['EMA20'] = df['Close'].ewm(span=20).mean()
     df['EMA60'] = df['Close'].ewm(span=60).mean()
     df['EMA120'] = df['Close'].ewm(span=120).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
 
     # RSI
     delta = df['Close'].diff()
@@ -132,37 +120,6 @@ def indicators(df):
 
     df['ATR'] = tr.rolling(14).mean()
 
-    # BOLLINGER
-    ma20 = df['Close'].rolling(20).mean()
-    std20 = df['Close'].rolling(20).std()
-
-    df['BB_UPPER'] = ma20 + (std20 * 2)
-    df['BB_LOWER'] = ma20 - (std20 * 2)
-
-    # ADX
-    plus_dm = df['High'].diff()
-    minus_dm = -df['Low'].diff()
-
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm < 0] = 0
-
-    tr14 = tr.rolling(14).sum()
-
-    plus_di = 100 * (
-        plus_dm.rolling(14).sum() / tr14
-    )
-
-    minus_di = 100 * (
-        minus_dm.rolling(14).sum() / tr14
-    )
-
-    dx = (
-        abs(plus_di - minus_di)
-        / (plus_di + minus_di)
-    ) * 100
-
-    df['ADX'] = dx.rolling(14).mean()
-
     # =====================================================
     # FIBONACCI
     # =====================================================
@@ -175,43 +132,65 @@ def indicators(df):
     diff = hp - lp
 
     df['Fib_0'] = hp
-    df['Fib_236'] = hp - (0.236 * diff)
-    df['Fib_382'] = hp - (0.382 * diff)
-    df['Fib_500'] = hp - (0.5 * diff)
-    df['Fib_618'] = hp - (0.618 * diff)
-    df['Fib_786'] = hp - (0.786 * diff)
+    df['Fib_236'] = hp - 0.236 * diff
+    df['Fib_382'] = hp - 0.382 * diff
+    df['Fib_500'] = hp - 0.500 * diff
+    df['Fib_618'] = hp - 0.618 * diff
+    df['Fib_786'] = hp - 0.786 * diff
     df['Fib_100'] = lp
 
     return df
 
 # =========================================================
-# MARKET REGIME
+# TREND LINE
 # =========================================================
 
-def market_regime(df):
+def trend_line(df):
 
-    latest = df.iloc[-1]
+    highs = argrelextrema(
+        df['High'].values,
+        np.greater,
+        order=10
+    )[0]
 
-    if (
-        latest['Close'] > latest['EMA200']
-        and latest['ADX'] > 25
-    ):
+    lows = argrelextrema(
+        df['Low'].values,
+        np.less,
+        order=10
+    )[0]
 
-        return "🔥 강세장"
+    trend = {}
 
-    elif (
-        latest['Close'] < latest['EMA200']
-        and latest['ADX'] > 25
-    ):
+    # 상단 추세선
+    if len(highs) >= 2:
 
-        return "❄ 약세장"
+        x = np.array(highs).reshape(-1, 1)
+        y = df.iloc[highs]['High'].values
 
-    else:
+        model = LinearRegression()
+        model.fit(x, y)
 
-        return "⚠ 횡보장"
+        trend['upper'] = model.predict(
+            np.arange(len(df)).reshape(-1, 1)
+        )
+
+    # 하단 추세선
+    if len(lows) >= 2:
+
+        x = np.array(lows).reshape(-1, 1)
+        y = df.iloc[lows]['Low'].values
+
+        model = LinearRegression()
+        model.fit(x, y)
+
+        trend['lower'] = model.predict(
+            np.arange(len(df)).reshape(-1, 1)
+        )
+
+    return trend
 
 # =========================================================
-# SIGNAL ENGINE
+# SIGNAL
 # =========================================================
 
 def signals(df):
@@ -222,14 +201,12 @@ def signals(df):
 
         (df['Close'] > df['EMA20']) &
 
-        (df['ADX'] > 20) &
-
         (df['MACD'] > df['MACD_SIGNAL']) &
-
-        (df['Volume'] > df['VOL_MA20'] * 1.3) &
 
         (df['RSI'] > 50) &
         (df['RSI'] < 72) &
+
+        (df['Volume'] > df['VOL_MA20']) &
 
         (df['Close'] > df['Fib_618'])
 
@@ -239,9 +216,9 @@ def signals(df):
 
         (df['MACD'] < df['MACD_SIGNAL']) |
 
-        (df['RSI'] > 80) |
+        (df['Close'] < df['EMA20']) |
 
-        (df['Close'] < df['EMA20'])
+        (df['RSI'] > 80)
 
     )
 
@@ -266,99 +243,13 @@ def score(df):
     if latest['MACD'] > latest['MACD_SIGNAL']:
         s += 20
 
-    if latest['ADX'] > 20:
+    if latest['RSI'] > 50:
         s += 20
 
     if latest['Volume'] > latest['VOL_MA20']:
         s += 20
 
     return s
-
-# =========================================================
-# RECOMMEND
-# =========================================================
-
-def recommendation(score):
-
-    if score >= 80:
-        return "🔥 강력매수"
-
-    elif score >= 60:
-        return "✅ 매수유망"
-
-    elif score >= 40:
-        return "⚠ 관망"
-
-    else:
-        return "❌ 비추천"
-
-# =========================================================
-# BACKTEST
-# =========================================================
-
-def backtest(df):
-
-    position = 0
-
-    trades = []
-
-    for i in range(1, len(df)):
-
-        row = df.iloc[i]
-
-        if position == 0 and row['BUY']:
-
-            entry = row['Close']
-            position = 1
-
-        elif position == 1 and row['SELL']:
-
-            exit_price = row['Close']
-
-            pnl = (
-                (exit_price - entry)
-                / entry
-            )
-
-            trades.append(pnl)
-
-            position = 0
-
-    if len(trades) == 0:
-
-        return 0, 0
-
-    winrate = (
-        len([x for x in trades if x > 0])
-        / len(trades)
-    ) * 100
-
-    avg = np.mean(trades) * 100
-
-    return round(winrate, 2), round(avg, 2)
-
-# =========================================================
-# RISK
-# =========================================================
-
-def risk(df):
-
-    latest = df.iloc[-1]
-
-    entry = latest['Close']
-
-    atr = latest['ATR']
-
-    stop = entry - (2 * atr)
-
-    target = entry + (4 * atr)
-
-    rr = (
-        (target - entry)
-        / (entry - stop)
-    )
-
-    return entry, stop, target, rr
 
 # =========================================================
 # SIDEBAR
@@ -370,7 +261,7 @@ with st.sidebar:
 
     query = st.text_input(
         "종목 검색",
-        value="삼성"
+        "삼성"
     )
 
     matches = master[
@@ -393,19 +284,19 @@ with st.sidebar:
             options
         )
 
-        stock_code = (
+        code = (
             selected.split("(")[1]
             .replace(")", "")
         )
 
         market = matches[
-            matches['Symbol'] == stock_code
+            matches['Symbol'] == code
         ].iloc[0]['Market']
 
         ticker = (
-            f"{stock_code}.KS"
+            f"{code}.KS"
             if market == "KOSPI"
-            else f"{stock_code}.KQ"
+            else f"{code}.KQ"
         )
 
         stock_name = selected.split(" (")[0]
@@ -422,14 +313,14 @@ with st.sidebar:
     )
 
 # =========================================================
-# MAIN
+# LOAD
 # =========================================================
 
 df = load_data(ticker, period)
 
 if df.empty:
 
-    st.error("데이터 로딩 실패")
+    st.error("데이터 불러오기 실패")
 
 else:
 
@@ -437,29 +328,23 @@ else:
 
     df = signals(df)
 
+    trend = trend_line(df)
+
     latest = df.iloc[-1]
 
-    s = score(df)
-
-    reco = recommendation(s)
-
-    regime = market_regime(df)
-
-    winrate, avg = backtest(df)
-
-    entry, stop, target, rr = risk(df)
+    ai_score = score(df)
 
     # =====================================================
     # TITLE
     # =====================================================
 
-    st.title(f"📈 {stock_name} PRO 전략분석")
+    st.title(f"📈 {stock_name} PRO ANALYSIS")
 
     # =====================================================
-    # METRICS
+    # METRIC
     # =====================================================
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
 
     c1.metric(
         "현재가",
@@ -472,38 +357,19 @@ else:
     )
 
     c3.metric(
-        "ADX",
-        f"{latest['ADX']:.1f}"
+        "MACD",
+        f"{latest['MACD']:.2f}"
     )
 
     c4.metric(
-        "AI SCORE",
-        f"{s}/100"
+        "ATR",
+        f"{latest['ATR']:.2f}"
     )
 
     c5.metric(
-        "시장상태",
-        regime
+        "AI SCORE",
+        f"{ai_score}/100"
     )
-
-    c6.metric(
-        "전략판단",
-        reco
-    )
-
-    # =====================================================
-    # FIB LEVELS
-    # =====================================================
-
-    fibs = {
-        '0%': latest['Fib_0'],
-        '23.6%': latest['Fib_236'],
-        '38.2%': latest['Fib_382'],
-        '50%': latest['Fib_500'],
-        '61.8%': latest['Fib_618'],
-        '78.6%': latest['Fib_786'],
-        '100%': latest['Fib_100']
-    }
 
     # =====================================================
     # CHART
@@ -518,44 +384,34 @@ else:
     )
 
     # =====================================================
-    # FIBONACCI ZONE
+    # FIBONACCI
     # =====================================================
 
-    levels = [
+    fib_levels = [
 
-        (fibs['0%'], fibs['23.6%'], 'rgba(255,0,0,0.08)'),
-
-        (fibs['23.6%'], fibs['38.2%'], 'rgba(255,165,0,0.08)'),
-
-        (fibs['38.2%'], fibs['50%'], 'rgba(255,255,0,0.06)'),
-
-        (fibs['50%'], fibs['61.8%'], 'rgba(0,255,0,0.06)'),
-
-        (fibs['61.8%'], fibs['78.6%'], 'rgba(0,0,255,0.06)')
+        ('Fib_0', 'red'),
+        ('Fib_236', 'orange'),
+        ('Fib_382', 'yellow'),
+        ('Fib_500', 'white'),
+        ('Fib_618', 'cyan'),
+        ('Fib_786', 'blue'),
+        ('Fib_100', 'green')
     ]
 
-    for top, bottom, color in levels:
+    for fib, color in fib_levels:
 
         fig.add_trace(
-            go.Scatter(
-                x=df['Date'],
-                y=[top] * len(df),
-                line=dict(width=0),
-                showlegend=False
-            ),
-            row=1,
-            col=1
-        )
 
-        fig.add_trace(
             go.Scatter(
                 x=df['Date'],
-                y=[bottom] * len(df),
-                fill='tonexty',
-                fillcolor=color,
-                line=dict(width=0),
-                showlegend=False
+                y=df[fib],
+                name=fib,
+                line=dict(
+                    dash='dot',
+                    color=color
+                )
             ),
+
             row=1,
             col=1
         )
@@ -579,22 +435,78 @@ else:
         col=1
     )
 
+    # =====================================================
     # EMA
-    for ema in ['EMA20', 'EMA60', 'EMA120']:
+    # =====================================================
+
+    ema_colors = {
+        'EMA20': 'yellow',
+        'EMA60': 'cyan',
+        'EMA120': 'magenta'
+    }
+
+    for ema, color in ema_colors.items():
 
         fig.add_trace(
 
             go.Scatter(
                 x=df['Date'],
                 y=df[ema],
-                name=ema
+                name=ema,
+                line=dict(
+                    width=2,
+                    color=color
+                )
             ),
 
             row=1,
             col=1
         )
 
+    # =====================================================
+    # TREND LINE
+    # =====================================================
+
+    if 'upper' in trend:
+
+        fig.add_trace(
+
+            go.Scatter(
+                x=df['Date'],
+                y=trend['upper'],
+                name='UPPER TREND',
+                line=dict(
+                    color='red',
+                    width=2
+                )
+            ),
+
+            row=1,
+            col=1
+        )
+
+    if 'lower' in trend:
+
+        fig.add_trace(
+
+            go.Scatter(
+                x=df['Date'],
+                y=trend['lower'],
+                name='LOWER TREND',
+                line=dict(
+                    color='lime',
+                    width=2
+                )
+            ),
+
+            row=1,
+            col=1
+        )
+
+    # =====================================================
     # BUY
+    # =====================================================
+
     buys = df[df['BUY']]
 
     fig.add_trace(
@@ -604,6 +516,7 @@ else:
             y=buys['Low'] * 0.98,
             mode='markers+text',
             text=['BUY'] * len(buys),
+            textposition='bottom center',
             marker=dict(
                 color='lime',
                 size=14,
@@ -616,7 +529,10 @@ else:
         col=1
     )
 
+    # =====================================================
     # SELL
+    # =====================================================
+
     sells = df[df['SELL']]
 
     fig.add_trace(
@@ -626,6 +542,7 @@ else:
             y=sells['High'] * 1.02,
             mode='markers+text',
             text=['SELL'] * len(sells),
+            textposition='top center',
             marker=dict(
                 color='red',
                 size=12,
@@ -638,7 +555,10 @@ else:
         col=1
     )
 
+    # =====================================================
     # VOLUME
+    # =====================================================
+
     fig.add_trace(
 
         go.Bar(
@@ -651,13 +571,17 @@ else:
         col=1
     )
 
+    # =====================================================
     # RSI
+    # =====================================================
+
     fig.add_trace(
 
         go.Scatter(
             x=df['Date'],
             y=df['RSI'],
-            name='RSI'
+            name='RSI',
+            line=dict(color='orange')
         ),
 
         row=3,
@@ -684,7 +608,7 @@ else:
 
         template='plotly_dark',
 
-        height=1100,
+        height=1200,
 
         xaxis_rangeslider_visible=False
     )
@@ -695,50 +619,36 @@ else:
     )
 
     # =====================================================
-    # STRATEGY REPORT
+    # REPORT
     # =====================================================
 
-    st.divider()
-
-    st.subheader("📋 AI 전략 분석")
+    st.subheader("📋 전략 분석")
 
     st.write(f"""
 
-### 🔥 현재 시장 분석
+### 현재 상태
 
-- 시장 상태: **{regime}**
-- 현재가: **{latest['Close']:,.0f}**
-- RSI: **{latest['RSI']:.1f}**
-- ADX: **{latest['ADX']:.1f}**
-- MACD 상태: **{'상승 우위' if latest['MACD'] > latest['MACD_SIGNAL'] else '하락 우위'}**
-- 피보나치 핵심지지: **{latest['Fib_618']:,.0f}**
-- ATR 변동성: **{latest['ATR']:.2f}**
-- 전략 점수: **{s}/100**
-- 전략 판단: **{reco}**
+- 현재가: {latest['Close']:,.0f}
+- RSI: {latest['RSI']:.1f}
+- MACD: {latest['MACD']:.2f}
+- ATR: {latest['ATR']:.2f}
 
----
+### 전략
 
-### 🎯 리스크 관리
+- EMA20 위 → 단기 상승 우위
+- EMA60 위 → 중기 상승 유지
+- Fib 61.8 위 유지 시 강세 가능성
+- 거래량 증가 여부 중요
 
-- 추천 진입가: **{entry:,.0f}**
-- 손절가: **{stop:,.0f}**
-- 목표가: **{target:,.0f}**
-- 손익비(RR): **{rr:.2f}**
+### AI SCORE
 
----
-
-### 📊 백테스트 결과
-
-- 승률: **{winrate}%**
-- 평균 수익률: **{avg}%**
+- {ai_score}/100
 
 """)
 
     # =====================================================
-    # INDICATOR GUIDE
+    # GUIDE
     # =====================================================
-
-    st.divider()
 
     st.subheader("📚 지표 설명")
 
@@ -746,43 +656,21 @@ else:
 
 ### RSI
 - 70 이상 → 과열 가능성
-- 30 이하 → 과매도 가능성
-- 50 이상 유지 → 상승 추세 우위
+- 30 이하 → 과매도
 
 ### MACD
-- MACD > SIGNAL → 상승 모멘텀
-- MACD < SIGNAL → 하락 모멘텀
+- 상승 모멘텀 판단
 
-### ADX
-- 20 이하 → 횡보 가능성
-- 25 이상 → 강한 추세 발생
+### EMA
+- 추세 방향 확인
 
 ### ATR
-- 변동성 지표
-- ATR 높을수록 손절 폭 넓혀야 함
+- 변동성 측정
 
 ### 피보나치
-- 61.8% 구간은 기관들이 많이 보는 핵심 되돌림 구간
-- 가격이 61.8 위 유지 시 강세 지속 확률 증가
+- 기관들이 많이 보는 되돌림 구간
 
-""")
-
-    # =====================================================
-    # WARNING
-    # =====================================================
-
-    st.warning("""
-
-본 시스템은 실전 보조 시스템입니다.
-
-반드시:
-- 뉴스
-- 실적
-- 금리
-- 시장 방향
-- 섹터 흐름
-- 외국인 수급
-
-을 함께 고려하세요.
+### 추세선
+- 지지/저항 시각화
 
 """)
