@@ -5,3 +5,4 @@ pandas
 scipy
 lxml
 pandas-datareader
+pykrx
