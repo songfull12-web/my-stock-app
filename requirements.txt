@@ -2,7 +2,6 @@ streamlit
 yfinance
 plotly
 pandas
+numpy
 scipy
 lxml
-pandas-datareader
-pykrx
