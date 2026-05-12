@@ -1,113 +1,129 @@
 import streamlit as st
-import streamlit.components.v1 as components
+import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
+import numpy as np
 
-# 1. 페이지 설정 (와이드 모드)
-st.set_page_config(page_title="Global Multi-Strategy Terminal", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="Custom Strategy Terminal", layout="wide")
 
-# 2. 한국 주식 전종목 리스트 확보 (네이버/KRX 기준)
-@st.cache_data(show_spinner="전종목 데이터를 실시간 동기화 중입니다...")
-def get_krx_master_list():
+# 2. [핵심] 네이버/KRX 기준 전종목 리스트 확보 (절대 누락 방지)
+@st.cache_data(show_spinner="전종목 리스트 동기화 중...")
+def get_total_krx_data():
     try:
-        # 가장 안정적인 종목 리스트 소스 활용
+        # 한국거래소(KRX) 전체 종목 리스트 소스
         url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
         df = pd.read_csv(url)
         return df[['Symbol', 'Name', 'Market']]
     except:
-        # 데이터 서버 응답 없을 시 최소 우량주 리스트 반환
-        return pd.DataFrame([
-            {"Symbol": "005930", "Name": "삼성전자", "Market": "KOSPI"},
-            {"Symbol": "000660", "Name": "SK하이닉스", "Market": "KOSPI"},
-            {"Symbol": "005935", "Name": "삼성전자우", "Market": "KOSPI"},
-            {"Symbol": "006400", "Name": "삼성SDI", "Market": "KOSPI"},
-            {"Symbol": "009150", "Name": "삼성전기", "Market": "KOSPI"},
-            {"Symbol": "207940", "Name": "삼성바이오로직스", "Market": "KOSPI"},
-            {"Symbol": "035720", "Name": "카카오", "Market": "KOSPI"}
-        ])
+        # 서버 응답 없을 시 비상용 (최소 데이터)
+        return pd.DataFrame([{"Symbol": "005930", "Name": "삼성전자", "Market": "KOSPI"}])
 
-krx_master = get_krx_master_list()
+krx_total = get_total_kr_stocks() if 'get_total_kr_stocks' in globals() else get_total_krx_data()
 
-# 3. 사이드바: 종목 검색 및 코드 나열 (사용자 핵심 요구사항)
+# 3. 전략 엔진 (기존 피보나치 6단계 + RSI + ★BUY 타점 로직)
+def apply_full_strategy(df):
+    if len(df) < 20: return df
+    
+    # 이평선
+    df['MA5'] = df['Close'].rolling(5).mean()
+    df['MA20'] = df['Close'].rolling(20).mean()
+    
+    # RSI
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    
+    # 피보나치 6단계 (고점/저점 기준)
+    hp, lp = df['High'].max(), df['Low'].min()
+    diff = hp - lp
+    df['Fib_0'] = hp
+    df['Fib_236'] = hp - 0.236 * diff
+    df['Fib_382'] = hp - 0.382 * diff
+    df['Fib_500'] = hp - 0.500 * diff
+    df['Fib_618'] = hp - 0.618 * diff
+    df['Fib_100'] = lp
+    
+    # ★BUY 타점
+    df['Buy_Signal'] = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1)) | (df['RSI'] < 30)
+    return df
+
+# 4. 사이드바: 전종목 리스트 나열 및 종목 선택
 with st.sidebar:
-    st.header("🔍 국/내외 종목 통합 검색")
-    search_keyword = st.text_input("종목명 입력 (예: 삼성, 현대, 에코)", value="삼성")
+    st.header("🔍 국/내외 통합 검색")
+    u_input = st.text_input("종목명 또는 티커 입력", value="삼성")
     
-    # 검색어가 포함된 모든 국내 종목 필터링
-    matched_stocks = krx_master[krx_master['Name'].str.contains(search_keyword, na=False, case=False)]
+    # [검색 기능] 입력어가 포함된 모든 국내 종목 나열
+    res = krx_total[krx_total['Name'].str.contains(u_input, na=False, case=False)]
     
-    if not matched_stocks.empty:
-        st.subheader(f"📋 '{search_keyword}' 검색 결과 ({len(matched_stocks)}건)")
+    if not res.empty:
+        st.subheader(f"📋 '{u_input}' 검색 결과 ({len(res)}건)")
+        # 표로 전체 리스트와 코드 출력
+        st.dataframe(res[['Name', 'Symbol', 'Market']].sort_values('Name'), hide_index=True, height=300)
         
-        # [핵심] 검색된 모든 종목과 코드를 표 형태로 나열 (여기서 코드를 다 볼 수 있음)
-        st.dataframe(
-            matched_stocks[['Name', 'Symbol', 'Market']].sort_values(by='Name'), 
-            hide_index=True, 
-            height=350,
-            use_container_width=True
-        )
+        # 분석 대상 선택
+        opts = [f"{r['Name']} ({r['Symbol']})" for _, r in res.sort_values('Name').iterrows()]
+        sel = st.selectbox("분석 종목 선택", opts)
         
-        # 선택 박스 (표에서 확인한 종목을 선택)
-        stock_options = [f"{r['Name']} ({r['Symbol']})" for _, r in matched_stocks.sort_values(by='Name').iterrows()]
-        selected_stock = st.selectbox("분석할 종목 선택", stock_options)
-        
-        # 트레이딩뷰용 티커 생성 (KRX:005930 형태)
-        target_code = selected_stock.split("(")[1].replace(")", "")
-        final_ticker = f"KRX:{target_code}"
-        display_name = selected_stock.split(" (")[0]
+        t_code = sel.split("(")[1].replace(")", "")
+        t_market = res[res['Symbol'] == t_code].iloc[0]['Market']
+        final_ticker = f"{t_code}{'.KS' if t_market == 'KOSPI' else '.KQ'}"
+        final_name = sel.split(" (")[0]
     else:
-        st.info("국내 종목 없음 -> 해외 티커 모드 (예: NVDA, TSLA)")
-        final_ticker = search_keyword.upper()
-        display_name = search_keyword.upper()
+        st.info("해외 티커로 분석합니다.")
+        final_ticker = u_input.upper()
+        final_name = u_input.upper()
 
     st.divider()
-    st.subheader("🛠️ 차트 설정")
-    chart_theme = st.radio("테마", ["dark", "light"], horizontal=True)
-    show_details = st.checkbox("호가 및 상세 정보 표시", value=True)
+    period = st.selectbox("분석 기간", ["6mo", "1y", "2y"])
+    show_fib = st.checkbox("피보나치 채널 표시", value=True)
 
-# 4. 메인 영역: 트레이딩뷰(TradingView) 프로 위젯 연동
-st.title(f"📈 {display_name} 실시간 전략 터미널")
+# 5. 메인 리포트 화면 (피보나치 수치 및 차트 직접 생성)
+if final_ticker:
+    data = yf.download(final_ticker, period=period, interval="1d", auto_adjust=True)
+    
+    if not data.empty:
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        data = data.reset_index()
+        data = apply_full_strategy(data)
+        
+        # 마지막 피보나치 값들
+        f_vals = {k: data[k].iloc[-1] for k in ['Fib_0', 'Fib_236', 'Fib_382', 'Fib_500', 'Fib_618', 'Fib_100']}
+        curr = float(data['Close'].iloc[-1])
+        
+        st.title(f"📊 {final_name} ({final_ticker}) 전략 분석")
+        
+        # 상단 메수/매도 목표가 메트릭 (기존 기능)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("현재가", f"{curr:,.0f}")
+        m2.metric("강력지지(61.8%)", f"{f_vals['Fib_618']:,.0f}", f"{((f_vals['Fib_618']/curr)-1)*100:.1f}%")
+        m3.metric("수익실현(38.2%)", f"{f_vals['Fib_382']:,.0f}", f"{((f_vals['Fib_382']/curr)-1)*100:.1f}%")
+        m4.metric("손절가(LP)", f"{f_vals['Fib_100']:,.0f}", f"{((f_vals['Fib_100']/curr)-1)*100:.1f}%", delta_color="inverse")
 
-# 트레이딩뷰 위젯 소스코드 (피보나치, RSI, 이평선 등 모든 도구 포함)
-tradingview_widget_code = f"""
-    <div class="tradingview-widget-container" style="height:850px; width:100%;">
-        <div id="tradingview_chart_container"></div>
-        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-        <script type="text/javascript">
-        new TradingView.widget({{
-            "autosize": true,
-            "symbol": "{final_ticker}",
-            "interval": "D",
-            "timezone": "Asia/Seoul",
-            "theme": "{chart_theme}",
-            "style": "1",
-            "locale": "kr",
-            "toolbar_bg": "#f1f3f6",
-            "enable_publishing": false,
-            "withdateranges": true,
-            "hide_side_toolbar": false,
-            "allow_symbol_change": true,
-            "details": {str(show_details).lower()},
-            "hotlist": true,
-            "calendar": true,
-            "studies": [
-                "RSI@tv-basicstudies",
-                "MASimple@tv-basicstudies",
-                "StochasticRSI@tv-basicstudies"
-            ],
-            "container_id": "tradingview_chart_container"
-        }});
-        </script>
-    </div>
-"""
+        # 차트 생성 (Plotly)
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
+        
+        # 피보나치 채널 시각화 (기존 로직)
+        if show_fib:
+            colors = ['rgba(255,0,0,0.1)', 'rgba(255,165,0,0.1)', 'rgba(255,255,0,0.05)', 'rgba(0,255,0,0.1)', 'rgba(0,0,255,0.1)']
+            lev_keys = ['Fib_0', 'Fib_236', 'Fib_382', 'Fib_500', 'Fib_618', 'Fib_100']
+            for i in range(5):
+                fig.add_trace(go.Scatter(x=data['Date'], y=[f_vals[lev_keys[i]]]*len(data), line=dict(width=0), showlegend=False), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data['Date'], y=[f_vals[lev_keys[i+1]]]*len(data), fill='tonexty', fillcolor=colors[i], line=dict(width=0.5, color='rgba(255,255,255,0.1)'), showlegend=False), row=1, col=1)
+            # 골든라인 강조
+            fig.add_trace(go.Scatter(x=data['Date'], y=[f_vals['Fib_618']]*len(data), name="GOLDEN LINE", line=dict(color='gold', width=4)), row=1, col=1)
 
-# 트레이딩뷰 위젯 렌더링
-components.html(tradingview_widget_code, height=850)
-
-# 5. 사용 가이드
-st.success(f"현재 {display_name} 차트를 분석 중입니다.")
-st.markdown("""
-> **💡 트레이딩뷰 활용 팁:**
-> * **피보나치:** 왼쪽 도구 모음의 3번째 아이콘(선형 도구)에서 '피보나치 되돌림'을 선택해 차트에 직접 그릴 수 있습니다.
-> * **지표:** 상단 '지표' 메뉴에서 MACD, 볼린저 밴드 등을 무제한 추가 가능합니다.
-> * **실시간:** 위 데이터는 실시간으로 연동되어 정확한 매수/매도 타점을 잡기에 유리합니다.
-""")
+        # 캔들스틱 차트
+        fig.add_trace(go.Candlestick(x=data['Date'], open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="주가"), row=1, col=1)
+        
+        # ★BUY 타점 표시
+        buys = data[data['Buy_Signal']]
+        fig.add_trace(go.Scatter(x=buys['Date'], y=buys['Low']*0.98, mode='markers+text', text=["★BUY"]*len(buys), textposition="bottom center", marker=dict(symbol='star', size=12, color='lime'), name='매수타점'), row=1, col=1)
+        
+        # 거래량
+        fig.add_trace(go.Bar(x=data['Date'], y=data['Volume'], name="거래량", marker_color='gray'), row=2, col=1)
+        
+        fig.update_layout(template="plotly_dark", height=850, xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
