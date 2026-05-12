@@ -8,11 +8,11 @@ import numpy as np
 # 1. 페이지 설정
 st.set_page_config(page_title="High-Visibility Strategy Terminal", layout="wide")
 
-# 2. 한국 주식 전종목 리스트 로드 (안정성 강화)
-@st.cache_data(show_spinner="종목 리스트 업데이트 중...")
+# 2. 한국 주식 전종목 리스트 로드 (안정성 극대화)
+@st.cache_data(show_spinner="전체 종목 데이터를 동기화 중입니다...")
 def get_all_korean_stocks():
     try:
-        # 실시간 KRX 종목 리스트 소스
+        # 실시간 KRX 종목 데이터 소스
         url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
         df = pd.read_csv(url)
         
@@ -23,8 +23,8 @@ def get_all_korean_stocks():
         }
         return stock_map
     except:
-        # 로드 실패 시 비상용 리스트
-        return {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "셀트리온": "068270.KS", "에코프로": "086520.KQ"}
+        # 로드 실패 시 핵심 우량주 리스트
+        return {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "셀트리온": "068270.KS", "현대차": "005380.KS"}
 
 stock_dict = get_all_korean_stocks()
 
@@ -51,7 +51,7 @@ def get_recommendations():
             except: continue
     return pd.DataFrame(recom_list)
 
-# 3. 보조지표 계산 (기존 피보나치/매수신호 로직)
+# 3. 보조지표 계산 (기존 피보나치/매수신호/★BUY 로직)
 def add_indicators(df):
     if len(df) < 20: return df
     df['MA5'] = df['Close'].rolling(5).mean()
@@ -72,7 +72,7 @@ def add_indicators(df):
     df['Buy_Signal'] = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1)) | (df['RSI'] < 30)
     return df
 
-# 4. 사이드바 - 검색 및 추천 (개선)
+# 4. 사이드바 - 검색 및 티커 리스트 출력 기능 (요청하신 부분)
 with st.sidebar:
     st.header("🎯 실시간 스캐너")
     if st.button("시장 스캔 시작"):
@@ -81,19 +81,26 @@ with st.sidebar:
         st.dataframe(st.session_state['recom_df'], hide_index=True)
 
     st.divider()
-    st.header("🔍 전종목 검색")
-    search_term = st.text_input("종목명 입력 (예: 삼성, 에코, 현대)", value="삼성전자")
+    st.header("🔍 전종목 검색 엔진")
+    search_term = st.text_input("종목명 입력 (예: 삼성, 에코, 카카오)", value="삼성전자")
     
-    # [부분 일치 검색 강화]
+    # [검색 필터링 및 리스트 생성]
     search_results = [n for n in stock_dict.keys() if search_term.upper() in n.upper()]
     
     if search_results:
-        # 검색된 리스트 중 실제 분석할 종목 선택
-        selected_name = st.selectbox(f"검색 결과 ({len(search_results)}건)", sorted(search_results))
+        # 1. 드롭다운 선택박스
+        selected_name = st.selectbox(f"검색된 종목 ({len(search_results)}건)", sorted(search_results))
         final_ticker = stock_dict[selected_name]
-        st.success(f"선택됨: {selected_name} ({final_ticker})")
+        
+        # 2. 직접 복사용 티커 리스트 (요청하신 기능)
+        st.info("💡 아래 리스트에서 코드를 확인/복사 하세요:")
+        ticker_list_df = pd.DataFrame([
+            {"종목명": name, "티커코드": stock_dict[name]} 
+            for name in sorted(search_results)
+        ])
+        st.dataframe(ticker_list_df, hide_index=True, height=200) # 표 형태로 코드 나열
     else:
-        st.warning("한국 주식 리스트에 없습니다. 직접 티커를 입력하세요.")
+        st.warning("한국 주식 검색 결과가 없습니다.")
         final_ticker = search_term.upper()
         selected_name = search_term
 
@@ -104,7 +111,7 @@ with st.sidebar:
     show_fib = st.checkbox("피보나치(강력강조)", value=True)
     show_vol = st.checkbox("거래량 표시", value=True)
 
-# 5. 메인 영역 (기존 시각화 로직 100% 유지)
+# 5. 메인 영역 (분석 기능 완벽 유지)
 if final_ticker:
     data = yf.download(final_ticker, period=period, interval="1d", auto_adjust=True)
     if not data.empty:
@@ -116,22 +123,22 @@ if final_ticker:
             curr_p = float(data['Close'].iloc[-1])
             f0, f236, f382, f500, f618, f100 = data['Fib_0'].iloc[-1], data['Fib_236'].iloc[-1], data['Fib_382'].iloc[-1], data['Fib_500'].iloc[-1], data['Fib_618'].iloc[-1], data['Fib_100'].iloc[-1]
 
-            st.title(f"📊 {selected_name} 매매 전략 가이드")
+            st.title(f"📊 {selected_name} ({final_ticker}) 분석 리포트")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("현재가", f"{curr_p:,.0f}")
             col2.metric("황금지지(61.8%)", f"{f618:,.0f}", f"{((f618/curr_p)-1)*100:.1f}%")
             col3.metric("1차목표(38.2%)", f"{f382:,.0f}", f"{((f382/curr_p)-1)*100:.1f}%")
-            col4.metric("손절라인(전저점)", f"{f100:,.0f}", f"{((f100/curr_p)-1)*100:.1f}%", delta_color="inverse")
+            col4.metric("손절라인", f"{f100:,.0f}", f"{((f100/curr_p)-1)*100:.1f}%", delta_color="inverse")
 
             rows = 2 if show_vol else 1
             fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.75, 0.25] if rows==2 else [1])
 
-            # 피보나치 채널
+            # 피보나치 채널 색상 강조
             if show_fib:
                 levels = [(f0, f236, 'rgba(255, 0, 0, 0.15)'), (f236, f382, 'rgba(255, 165, 0, 0.1)'), (f382, f500, 'rgba(255, 255, 0, 0.08)'), (f500, f618, 'rgba(0, 255, 0, 0.1)'), (f618, f100, 'rgba(0, 0, 255, 0.15)')]
                 for top, bottom, color in levels:
                     fig.add_trace(go.Scatter(x=data['Date'], y=[top]*len(data), line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=data['Date'], y=[bottom]*len(data), fill='tonexty', fillcolor=color, line=dict(width=1, color='rgba(255,255,255,0.1)'), showlegend=False), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=data['Date'], y=[bottom]*len(data), fill='tonexty', fillcolor=color, line=dict(width=0.5, color='rgba(255,255,255,0.1)'), showlegend=False), row=1, col=1)
                 fig.add_trace(go.Scatter(x=data['Date'], y=[f618]*len(data), name="GOLDEN LINE", line=dict(color='gold', width=4)), row=1, col=1)
 
             fig.add_trace(go.Candlestick(x=data['Date'], open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="주가"), row=1, col=1)
@@ -140,7 +147,7 @@ if final_ticker:
                 for col, color in [('MA5', 'orange'), ('MA20', 'cyan'), ('MA60', 'magenta'), ('MA120', 'white')]:
                     if col in data.columns: fig.add_trace(go.Scatter(x=data['Date'], y=data[col], name=col, line=dict(color=color, width=1.5)), row=1, col=1)
 
-            # 매수 타점
+            # 매수 타점 (★BUY) 복구
             if 'Buy_Signal' in data.columns:
                 buy_pts = data[data['Buy_Signal']]
                 fig.add_trace(go.Scatter(x=buy_pts['Date'], y=buy_pts['Low']*0.98, mode='markers+text', text=["★BUY"]*len(buy_pts), textposition="bottom center", marker=dict(symbol='star', size=12, color='yellow'), name='타점'), row=1, col=1)
