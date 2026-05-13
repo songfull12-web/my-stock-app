@@ -1,676 +1,157 @@
 import streamlit as st
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-import plotly.graph_objects as go
+# 1. 페이지 설정
+st.set_page_config(page_title="High-Visibility Strategy Terminal", layout="wide")
 
-from plotly.subplots import make_subplots
-
-from scipy.signal import argrelextrema
-from sklearn.linear_model import LinearRegression
-
-# =========================================================
-# PAGE
-# =========================================================
-
-st.set_page_config(
-    page_title="PRO TRADING TERMINAL",
-    layout="wide"
-)
-
-# =========================================================
-# STYLE
-# =========================================================
-
-st.markdown("""
-<style>
-
-html, body, [class*="css"] {
-    background-color: #0e1117;
-    color: white;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-# =========================================================
-# KRX DB
-# =========================================================
-
+# 2. 종목 데이터 로드
 @st.cache_data
-def load_krx():
+def get_stock_dict():
+    stocks = {"삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380", "NAVER": "035420", "카카오": "035720"}
+    try:
+        url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
+        df = pd.read_csv(url)
+        for _, row in df.iterrows():
+            stocks[str(row['Name'])] = str(row['Symbol']).zfill(6)
+    except:
+        pass
+    return stocks
 
-    url = "https://raw.githubusercontent.com/FinanceData/FinanceDataReader/master/KRX_Stock_Symbols.csv"
+stock_dict = get_stock_dict()
 
-    df = pd.read_csv(url)
+# [추천 엔진]
+def get_recommendations():
+    target_pool = {
+        "국내": {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "현대차": "005380.KS", "셀트리온": "068270.KS"},
+        "미국": {"NVIDIA": "NVDA", "Apple": "AAPL", "Tesla": "TSLA", "Microsoft": "MSFT"}
+    }
+    recom_list = []
+    for market, tickers in target_pool.items():
+        for name, ticker in tickers.items():
+            try:
+                df = yf.download(ticker, period="6mo", interval="1d", progress=False)
+                if df.empty: continue
+                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                close = float(df['Close'].iloc[-1])
+                hp, lp = df['High'].max(), df['Low'].min()
+                fib_618 = hp - 0.618 * (hp - lp)
+                delta = df['Close'].diff()
+                rsi = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / -delta.where(delta < 0, 0).rolling(14).mean()))).iloc[-1]
+                if rsi < 40 or (close <= fib_618 * 1.02):
+                    recom_list.append({"시장": market, "종목": name, "가격": round(close, 2), "상태": "🔥 매수기회"})
+            except: continue
+    return pd.DataFrame(recom_list)
 
-    return df[['Symbol', 'Name', 'Market']]
-
-master = load_krx()
-
-# =========================================================
-# LOAD DATA
-# =========================================================
-
-@st.cache_data(ttl=300)
-def load_data(ticker, period):
-
-    df = yf.download(
-        ticker,
-        period=period,
-        interval="1d",
-        auto_adjust=True,
-        progress=False
-    )
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df.reset_index(inplace=True)
-
-    return df
-
-# =========================================================
-# INDICATORS
-# =========================================================
-
-def indicators(df):
-
-    # EMA
-    df['EMA20'] = df['Close'].ewm(span=20).mean()
-    df['EMA60'] = df['Close'].ewm(span=60).mean()
-    df['EMA120'] = df['Close'].ewm(span=120).mean()
-
-    # RSI
+# 3. 보조지표 계산
+def add_indicators(df):
+    if len(df) < 120: return df
+    df['MA5'] = df['Close'].rolling(5).mean()
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
+    df['MA120'] = df['Close'].rolling(120).mean()
+    
     delta = df['Close'].diff()
-
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-
-    rs = avg_gain / avg_loss
-
-    df['RSI'] = 100 - (100 / (1 + rs))
-
-    # MACD
-    ema12 = df['Close'].ewm(span=12).mean()
-    ema26 = df['Close'].ewm(span=26).mean()
-
-    df['MACD'] = ema12 - ema26
-    df['MACD_SIGNAL'] = df['MACD'].ewm(span=9).mean()
-
-    # VOLUME
-    df['VOL_MA20'] = df['Volume'].rolling(20).mean()
-
-    # ATR
-    high_low = df['High'] - df['Low']
-
-    high_close = abs(df['High'] - df['Close'].shift())
-    low_close = abs(df['Low'] - df['Close'].shift())
-
-    ranges = pd.concat(
-        [high_low, high_close, low_close],
-        axis=1
-    )
-
-    tr = ranges.max(axis=1)
-
-    df['ATR'] = tr.rolling(14).mean()
-
-    # =====================================================
-    # FIBONACCI
-    # =====================================================
-
-    recent = df.tail(120)
-
-    hp = recent['High'].max()
-    lp = recent['Low'].min()
-
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    
+    hp, lp = df['High'].max(), df['Low'].min()
     diff = hp - lp
-
+    # 피보나치 레벨 계산
     df['Fib_0'] = hp
     df['Fib_236'] = hp - 0.236 * diff
     df['Fib_382'] = hp - 0.382 * diff
-    df['Fib_500'] = hp - 0.500 * diff
+    df['Fib_500'] = hp - 0.5 * diff
     df['Fib_618'] = hp - 0.618 * diff
-    df['Fib_786'] = hp - 0.786 * diff
     df['Fib_100'] = lp
-
+    
+    df['Buy_Signal'] = (df['MA5'] > df['MA20']) & (df['MA5'].shift(1) <= df['MA20'].shift(1)) | (df['RSI'] < 30)
     return df
 
-# =========================================================
-# TREND LINE
-# =========================================================
-
-def trend_line(df):
-
-    highs = argrelextrema(
-        df['High'].values,
-        np.greater,
-        order=10
-    )[0]
-
-    lows = argrelextrema(
-        df['Low'].values,
-        np.less,
-        order=10
-    )[0]
-
-    trend = {}
-
-    # 상단 추세선
-    if len(highs) >= 2:
-
-        x = np.array(highs).reshape(-1, 1)
-        y = df.iloc[highs]['High'].values
-
-        model = LinearRegression()
-        model.fit(x, y)
-
-        trend['upper'] = model.predict(
-            np.arange(len(df)).reshape(-1, 1)
-        )
-
-    # 하단 추세선
-    if len(lows) >= 2:
-
-        x = np.array(lows).reshape(-1, 1)
-        y = df.iloc[lows]['Low'].values
-
-        model = LinearRegression()
-        model.fit(x, y)
-
-        trend['lower'] = model.predict(
-            np.arange(len(df)).reshape(-1, 1)
-        )
-
-    return trend
-
-# =========================================================
-# SIGNAL
-# =========================================================
-
-def signals(df):
-
-    df['BUY'] = (
-
-        (df['EMA20'] > df['EMA60']) &
-
-        (df['Close'] > df['EMA20']) &
-
-        (df['MACD'] > df['MACD_SIGNAL']) &
-
-        (df['RSI'] > 50) &
-        (df['RSI'] < 72) &
-
-        (df['Volume'] > df['VOL_MA20']) &
-
-        (df['Close'] > df['Fib_618'])
-
-    )
-
-    df['SELL'] = (
-
-        (df['MACD'] < df['MACD_SIGNAL']) |
-
-        (df['Close'] < df['EMA20']) |
-
-        (df['RSI'] > 80)
-
-    )
-
-    return df
-
-# =========================================================
-# SCORE
-# =========================================================
-
-def score(df):
-
-    latest = df.iloc[-1]
-
-    s = 0
-
-    if latest['Close'] > latest['EMA20']:
-        s += 20
-
-    if latest['EMA20'] > latest['EMA60']:
-        s += 20
-
-    if latest['MACD'] > latest['MACD_SIGNAL']:
-        s += 20
-
-    if latest['RSI'] > 50:
-        s += 20
-
-    if latest['Volume'] > latest['VOL_MA20']:
-        s += 20
-
-    return s
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-
+# 4. 사이드바
 with st.sidebar:
+    st.header("🎯 실시간 스캐너")
+    if st.button("시장 스캔 시작"):
+        st.session_state['recom_df'] = get_recommendations()
+    if 'recom_df' in st.session_state:
+        st.dataframe(st.session_state['recom_df'], hide_index=True)
 
-    st.title("🔥 PRO TERMINAL")
-
-    query = st.text_input(
-        "종목 검색",
-        "삼성"
-    )
-
-    matches = master[
-        master['Name'].str.contains(
-            query,
-            case=False,
-            na=False
-        )
-    ]
-
-    if not matches.empty:
-
-        options = [
-            f"{r['Name']} ({r['Symbol']})"
-            for _, r in matches.iterrows()
-        ]
-
-        selected = st.selectbox(
-            "종목 선택",
-            options
-        )
-
-        code = (
-            selected.split("(")[1]
-            .replace(")", "")
-        )
-
-        market = matches[
-            matches['Symbol'] == code
-        ].iloc[0]['Market']
-
-        ticker = (
-            f"{code}.KS"
-            if market == "KOSPI"
-            else f"{code}.KQ"
-        )
-
-        stock_name = selected.split(" (")[0]
-
+    st.divider()
+    search_input = st.text_input("종목명 입력", value="삼성전자")
+    matches = [n for n in stock_dict.keys() if search_input in n]
+    if matches:
+        selected_name = st.selectbox("검색 결과", matches)
+        code = stock_dict[selected_name]
+        final_ticker = f"{code}.KS" if code.isdigit() else code
     else:
-
-        ticker = query.upper()
-        stock_name = query.upper()
-
-    period = st.selectbox(
-        "기간",
-        ["6mo", "1y", "2y", "5y"],
-        index=2
-    )
-
-# =========================================================
-# LOAD
-# =========================================================
-
-df = load_data(ticker, period)
-
-if df.empty:
-
-    st.error("데이터 불러오기 실패")
-
-else:
-
-    df = indicators(df)
-
-    df = signals(df)
-
-    trend = trend_line(df)
-
-    latest = df.iloc[-1]
-
-    ai_score = score(df)
-
-    # =====================================================
-    # TITLE
-    # =====================================================
-
-    st.title(f"📈 {stock_name} PRO ANALYSIS")
-
-    # =====================================================
-    # METRIC
-    # =====================================================
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-
-    c1.metric(
-        "현재가",
-        f"{latest['Close']:,.0f}"
-    )
-
-    c2.metric(
-        "RSI",
-        f"{latest['RSI']:.1f}"
-    )
-
-    c3.metric(
-        "MACD",
-        f"{latest['MACD']:.2f}"
-    )
-
-    c4.metric(
-        "ATR",
-        f"{latest['ATR']:.2f}"
-    )
-
-    c5.metric(
-        "AI SCORE",
-        f"{ai_score}/100"
-    )
-
-    # =====================================================
-    # CHART
-    # =====================================================
-
-    fig = make_subplots(
-        rows=3,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.7, 0.15, 0.15]
-    )
-
-    # =====================================================
-    # FIBONACCI
-    # =====================================================
-
-    fib_levels = [
-
-        ('Fib_0', 'red'),
-        ('Fib_236', 'orange'),
-        ('Fib_382', 'yellow'),
-        ('Fib_500', 'white'),
-        ('Fib_618', 'cyan'),
-        ('Fib_786', 'blue'),
-        ('Fib_100', 'green')
-    ]
-
-    for fib, color in fib_levels:
-
-        fig.add_trace(
-
-            go.Scatter(
-                x=df['Date'],
-                y=df[fib],
-                name=fib,
-                line=dict(
-                    dash='dot',
-                    color=color
-                )
-            ),
-
-            row=1,
-            col=1
-        )
-
-    # =====================================================
-    # CANDLE
-    # =====================================================
-
-    fig.add_trace(
-
-        go.Candlestick(
-            x=df['Date'],
-            open=df['Open'],
-            high=df['High'],
-            low=df['Low'],
-            close=df['Close'],
-            name='PRICE'
-        ),
-
-        row=1,
-        col=1
-    )
-
-    # =====================================================
-    # EMA
-    # =====================================================
-
-    ema_colors = {
-        'EMA20': 'yellow',
-        'EMA60': 'cyan',
-        'EMA120': 'magenta'
-    }
-
-    for ema, color in ema_colors.items():
-
-        fig.add_trace(
-
-            go.Scatter(
-                x=df['Date'],
-                y=df[ema],
-                name=ema,
-                line=dict(
-                    width=2,
-                    color=color
-                )
-            ),
-
-            row=1,
-            col=1
-        )
-
-    # =====================================================
-    # TREND LINE
-    # =====================================================
-
-    if 'upper' in trend:
-
-        fig.add_trace(
-
-            go.Scatter(
-                x=df['Date'],
-                y=trend['upper'],
-                name='UPPER TREND',
-                line=dict(
-                    color='red',
-                    width=2
-                )
-            ),
-
-            row=1,
-            col=1
-        )
-
-    if 'lower' in trend:
-
-        fig.add_trace(
-
-            go.Scatter(
-                x=df['Date'],
-                y=trend['lower'],
-                name='LOWER TREND',
-                line=dict(
-                    color='lime',
-                    width=2
-                )
-            ),
-
-            row=1,
-            col=1
-        )
-
-    # =====================================================
-    # BUY
-    # =====================================================
-
-    buys = df[df['BUY']]
-
-    fig.add_trace(
-
-        go.Scatter(
-            x=buys['Date'],
-            y=buys['Low'] * 0.98,
-            mode='markers+text',
-            text=['BUY'] * len(buys),
-            textposition='bottom center',
-            marker=dict(
-                color='lime',
-                size=14,
-                symbol='triangle-up'
-            ),
-            name='BUY'
-        ),
-
-        row=1,
-        col=1
-    )
-
-    # =====================================================
-    # SELL
-    # =====================================================
-
-    sells = df[df['SELL']]
-
-    fig.add_trace(
-
-        go.Scatter(
-            x=sells['Date'],
-            y=sells['High'] * 1.02,
-            mode='markers+text',
-            text=['SELL'] * len(sells),
-            textposition='top center',
-            marker=dict(
-                color='red',
-                size=12,
-                symbol='x'
-            ),
-            name='SELL'
-        ),
-
-        row=1,
-        col=1
-    )
-
-    # =====================================================
-    # VOLUME
-    # =====================================================
-
-    fig.add_trace(
-
-        go.Bar(
-            x=df['Date'],
-            y=df['Volume'],
-            name='VOLUME'
-        ),
-
-        row=2,
-        col=1
-    )
-
-    # =====================================================
-    # RSI
-    # =====================================================
-
-    fig.add_trace(
-
-        go.Scatter(
-            x=df['Date'],
-            y=df['RSI'],
-            name='RSI',
-            line=dict(color='orange')
-        ),
-
-        row=3,
-        col=1
-    )
-
-    fig.add_hline(
-        y=70,
-        line_dash='dash',
-        line_color='red',
-        row=3,
-        col=1
-    )
-
-    fig.add_hline(
-        y=30,
-        line_dash='dash',
-        line_color='green',
-        row=3,
-        col=1
-    )
-
-    fig.update_layout(
-
-        template='plotly_dark',
-
-        height=1200,
-
-        xaxis_rangeslider_visible=False
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
-    # =====================================================
-    # REPORT
-    # =====================================================
-
-    st.subheader("📋 전략 분석")
-
-    st.write(f"""
-
-### 현재 상태
-
-- 현재가: {latest['Close']:,.0f}
-- RSI: {latest['RSI']:.1f}
-- MACD: {latest['MACD']:.2f}
-- ATR: {latest['ATR']:.2f}
-
-### 전략
-
-- EMA20 위 → 단기 상승 우위
-- EMA60 위 → 중기 상승 유지
-- Fib 61.8 위 유지 시 강세 가능성
-- 거래량 증가 여부 중요
-
-### AI SCORE
-
-- {ai_score}/100
-
-""")
-
-    # =====================================================
-    # GUIDE
-    # =====================================================
-
-    st.subheader("📚 지표 설명")
-
-    st.write("""
-
-### RSI
-- 70 이상 → 과열 가능성
-- 30 이하 → 과매도
-
-### MACD
-- 상승 모멘텀 판단
-
-### EMA
-- 추세 방향 확인
-
-### ATR
-- 변동성 측정
-
-### 피보나치
-- 기관들이 많이 보는 되돌림 구간
-
-### 추세선
-- 지지/저항 시각화
-
-""")
+        final_ticker = search_input.upper()
+        selected_name = search_input
+
+    period = st.selectbox("조회 기간", ["6mo", "1y", "2y"], index=0)
+    
+    st.subheader("🛠️ 지표 설정")
+    show_ma = st.checkbox("이동평균선 표시", value=True)
+    show_fib = st.checkbox("피보나치(강력강조)", value=True)
+    show_vol = st.checkbox("거래량 표시", value=True)
+
+# 5. 메인 영역
+if final_ticker:
+    data = yf.download(final_ticker, period=period, interval="1d", auto_adjust=True)
+    if not data.empty:
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        data = data.reset_index()
+        data = add_indicators(data)
+        
+        curr_p = float(data['Close'].iloc[-1])
+        f0, f236, f382, f500, f618, f100 = data['Fib_0'].iloc[-1], data['Fib_236'].iloc[-1], data['Fib_382'].iloc[-1], data['Fib_500'].iloc[-1], data['Fib_618'].iloc[-1], data['Fib_100'].iloc[-1]
+
+        st.title(f"📊 {selected_name} 매매 전략 가이드")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("현재가", f"{curr_p:,.0f}")
+        col2.metric("황금지지(61.8%)", f"{f618:,.0f}", f"{((f618/curr_p)-1)*100:.1f}%")
+        col3.metric("1차목표(38.2%)", f"{f382:,.0f}", f"{((f382/curr_p)-1)*100:.1f}%", delta_color="normal")
+        col4.metric("손절라인(전저점)", f"{f100:,.0f}", f"{((f100/curr_p)-1)*100:.1f}%", delta_color="inverse")
+
+        rows = 2 if show_vol else 1
+        fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.75, 0.25] if rows==2 else [1])
+
+        # 1. 피보나치 채널 (강력 시각화 - 캔들보다 뒤에 배치하기 위해 먼저 그림)
+        if show_fib:
+            levels = [
+                (f0, f236, 'rgba(255, 0, 0, 0.2)', '0% (저항)'),
+                (f236, f382, 'rgba(255, 165, 0, 0.15)', '23.6%'),
+                (f382, f500, 'rgba(255, 255, 0, 0.1)', '38.2%'),
+                (f500, f618, 'rgba(0, 255, 0, 0.15)', '50.0%'),
+                (f618, f100, 'rgba(0, 0, 255, 0.2)', '61.8% (강력지지)')
+            ]
+            for top, bottom, color, name in levels:
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=[top]*len(data), line=dict(width=0), showlegend=False, hoverinfo='skip'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=[bottom]*len(data), fill='tonexty', fillcolor=color, line=dict(width=1, color='rgba(255,255,255,0.2)'), name=name), row=1, col=1)
+            
+            # 황금선(61.8%) 강조
+            fig.add_trace(go.Scatter(x=data.iloc[:,0], y=[f618]*len(data), name="GOLDEN LINE", line=dict(color='gold', width=4)), row=1, col=1)
+
+        # 2. 캔들스틱
+        fig.add_trace(go.Candlestick(x=data.iloc[:,0], open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="주가"), row=1, col=1)
+
+        # 3. 이동평균선
+        if show_ma:
+            ma_configs = [('MA5', 'orange', 1), ('MA20', 'cyan', 2), ('MA60', 'magenta', 2), ('MA120', 'white', 2)]
+            for col, color, width in ma_configs:
+                fig.add_trace(go.Scatter(x=data.iloc[:,0], y=data[col], name=col, line=dict(color=color, width=width), opacity=0.8), row=1, col=1)
+
+        # 4. 매수 신호
+        buy_pts = data[data['Buy_Signal']]
+        fig.add_trace(go.Scatter(x=buy_pts.iloc[:,0], y=buy_pts['Low']*0.96, mode='markers+text', text=["★BUY"], textposition="bottom center", marker=dict(symbol='star', size=15, color='yellow'), name='타점'), row=1, col=1)
+
+        # 5. 거래량
+        if show_vol:
+            colors = ['red' if r['Open'] < r['Close'] else 'blue' for _, r in data.iterrows()]
+            fig.add_trace(go.Bar(x=data.iloc[:,0], y=data['Volume'], marker_color=colors, name="거래량"), row=2, col=1)
+
+        fig.update_layout(template="plotly_dark", height=850, xaxis_rangeslider_visible=False, showlegend=True)
+        st.plotly_chart(fig, use_container_width=True)
